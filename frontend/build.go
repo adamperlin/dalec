@@ -6,11 +6,12 @@ import (
 	"fmt"
 
 	"github.com/Azure/dalec"
+	"github.com/containerd/containerd/platforms"
 	"github.com/moby/buildkit/exporter/containerimage/image"
 	"github.com/moby/buildkit/frontend/dockerui"
 	gwclient "github.com/moby/buildkit/frontend/gateway/client"
 	"github.com/moby/buildkit/frontend/subrequests/targets"
-	oicspecs "github.com/opencontainers/image-spec/specs-go/v1"
+	ocispecs "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func loadSpec(ctx context.Context, client *dockerui.Client) (*dalec.Spec, error) {
@@ -19,7 +20,7 @@ func loadSpec(ctx context.Context, client *dockerui.Client) (*dalec.Spec, error)
 		return nil, fmt.Errorf("could not read spec file: %w", err)
 	}
 
-	spec, err := dalec.LoadSpec(bytes.TrimSpace(src.Data), client.BuildArgs)
+	spec, err := dalec.LoadSpec(bytes.TrimSpace(src.Data))
 	if err != nil {
 		return nil, fmt.Errorf("error loading spec: %w", err)
 	}
@@ -57,6 +58,35 @@ func makeRequestHandler(target string) dockerui.RequestHandler {
 	}
 
 	return h
+}
+
+func getOS(platform ocispecs.Platform) string {
+	return platform.OS
+}
+
+func getArch(platform ocispecs.Platform) string {
+	return platform.Architecture
+}
+
+func getVariant(platform ocispecs.Platform) string {
+	return platform.Variant
+}
+
+func getPlatformFormat(platform ocispecs.Platform) string {
+	return platforms.Format(platform)
+}
+
+var passthroughGetters = map[string]func(ocispecs.Platform) string{
+	"OS":       getOS,
+	"ARCH":     getArch,
+	"VARIANT":  getVariant,
+	"PLATFORM": getPlatformFormat,
+}
+
+func fillPlatformArgs(prefix string, args map[string]string, platform ocispecs.Platform) {
+	for attr, getter := range passthroughGetters {
+		args[prefix+attr] = getter(platform)
+	}
 }
 
 // Build is the main entrypoint for the dalec frontend.
@@ -100,7 +130,28 @@ func Build(ctx context.Context, client gwclient.Client) (*gwclient.Result, error
 		return nil, err
 	}
 
-	rb, err := bc.Build(ctx, func(ctx context.Context, platform *oicspecs.Platform, idx int) (gwclient.Reference, *image.Image, error) {
+	rb, err := bc.Build(ctx, func(ctx context.Context, platform *ocispecs.Platform, idx int) (gwclient.Reference, *image.Image, error) {
+		var targetPlatform, buildPlatform ocispecs.Platform
+		if platform != nil {
+			targetPlatform = *platform
+		} else {
+			targetPlatform = platforms.DefaultSpec()
+		}
+
+		// the dockerui client, given the current implementation, should only ever have
+		// a single build platform
+		if len(bc.BuildPlatforms) != 1 {
+			return nil, nil, fmt.Errorf("expected exactly one build platform, got %d", len(bc.BuildPlatforms))
+		}
+		buildPlatform = bc.BuildPlatforms[0]
+
+		args := dalec.DuplicateMap(bc.BuildArgs)
+		fillPlatformArgs("TARGET", args, targetPlatform)
+		fillPlatformArgs("BUILD", args, buildPlatform)
+		if err := spec.SubstituteArgs(args); err != nil {
+			return nil, nil, err
+		}
+
 		return f(ctx, client, spec)
 	})
 	if err != nil {

@@ -214,15 +214,15 @@ func (w *specWrapper) PrepareSources() (fmt.Stringer, error) {
 			}
 
 			if !isDir {
-				fmt.Fprintf(b, "cp -a %%{_sourcedir}/%s .\n", name)
+				fmt.Fprintf(b, "cp -a \"%%{_sourcedir}/%s\" .\n", name)
 				return nil
 			}
 
-			fmt.Fprintf(b, "mkdir -p %%{_builddir}/%s\n", name)
-			fmt.Fprintf(b, "tar -C %%{_builddir}/%s -xzf %%{_sourcedir}/%s.tar.gz\n", name, name)
+			fmt.Fprintf(b, "mkdir -p \"%%{_builddir}/%s\"\n", name)
+			fmt.Fprintf(b, "tar -C \"%%{_builddir}/%s\" -xzf \"%%{_sourcedir}/%s.tar.gz\"\n", name, name)
 
 			for _, patch := range w.Spec.Patches[name] {
-				fmt.Fprintf(b, "patch -d %q -p%d -s < %%{_sourcedir}/%s\n", name, *patch.Strip, patch.Source)
+				fmt.Fprintf(b, "patch -d %q -p%d -s < \"%%{_sourcedir}/%s\"\n", name, *patch.Strip, patch.Source)
 			}
 			return nil
 		}(name, src)
@@ -239,7 +239,7 @@ func writeStep(b *strings.Builder, step dalec.BuildStep) {
 	// will be available to every command in the BuildStep
 	fmt.Fprintln(b, "(") // begin subshell
 	for _, k := range envKeys {
-		fmt.Fprintf(b, "export %s=%s\n", k, step.Env[k])
+		fmt.Fprintf(b, "export %s=\"%s\"\n", k, step.Env[k])
 	}
 	fmt.Fprintf(b, "%s", step.Command)
 	fmt.Fprintln(b, ")") // end subshell
@@ -260,7 +260,7 @@ func (w *specWrapper) BuildSteps() fmt.Stringer {
 	envKeys := dalec.SortMapKeys(t.Env)
 	for _, k := range envKeys {
 		v := t.Env[k]
-		fmt.Fprintf(b, "export %s=%s\n", k, v)
+		fmt.Fprintf(b, "export %s=\"%s\"\n", k, v)
 	}
 
 	for _, step := range t.Steps {

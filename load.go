@@ -18,6 +18,16 @@ func knownArg(key string) bool {
 		return true
 	case "DALEC_DISABLE_DIFF_MERGE":
 		return true
+	}
+
+	return platformArg(key)
+}
+
+func platformArg(key string) bool {
+	switch key {
+	case "TARGETOS", "TARGETARCH", "TARGETPLATFORM", "TARGETVARIANT",
+		"BUILDOS", "BUILDARCH", "BUILDPLATFORM", "BUILDVARIANT":
+		return true
 	default:
 		return false
 	}
@@ -30,16 +40,19 @@ func (s *Source) substituteBuildArgs(args map[string]string) error {
 
 	switch {
 	case s.DockerImage != nil:
-		for _, mnt := range s.DockerImage.Cmd.Mounts {
-			if err := mnt.Spec.substituteBuildArgs(args); err != nil {
-				return err
-			}
-		}
 		updated, err := lex.ProcessWordWithMap(s.DockerImage.Ref, args)
 		if err != nil {
 			return err
 		}
 		s.DockerImage.Ref = updated
+
+		if s.DockerImage.Cmd != nil {
+			for _, mnt := range s.DockerImage.Cmd.Mounts {
+				if err := mnt.Spec.substituteBuildArgs(args); err != nil {
+					return err
+				}
+			}
+		}
 	case s.Git != nil:
 		updated, err := lex.ProcessWordWithMap(s.Git.URL, args)
 		if err != nil {
@@ -88,8 +101,10 @@ func (s *Source) substituteBuildArgs(args map[string]string) error {
 func fillDefaults(s *Source) {
 	switch {
 	case s.DockerImage != nil:
-		for _, mnt := range s.DockerImage.Cmd.Mounts {
-			fillDefaults(&mnt.Spec)
+		if s.DockerImage.Cmd != nil {
+			for _, mnt := range s.DockerImage.Cmd.Mounts {
+				fillDefaults(&mnt.Spec)
+			}
 		}
 	case s.Git != nil:
 	case s.HTTP != nil:
@@ -197,101 +212,97 @@ func (s *SourceBuild) validate(failContext ...string) (retErr error) {
 	return
 }
 
-// LoadSpec loads a spec from the given data.
-// env is a map of environment variables to use for shell-style expansion in the spec.
-func LoadSpec(dt []byte, env map[string]string) (*Spec, error) {
-	var spec Spec
-	if err := yaml.Unmarshal(dt, &spec); err != nil {
-		return nil, fmt.Errorf("error unmarshalling spec: %w", err)
-	}
-
+func (s *Spec) SubstituteArgs(env map[string]string) error {
 	lex := shell.NewLex('\\')
 
 	args := make(map[string]string)
-	for k, v := range spec.Args {
+	for k, v := range s.Args {
 		args[k] = v
 	}
 	for k, v := range env {
 		if _, ok := args[k]; !ok {
 			if !knownArg(k) {
-				return nil, fmt.Errorf("unknown arg %q", k)
+				return fmt.Errorf("unknown arg %q", k)
 			}
+
+			// if the build arg isn't present in args by opt-in, skip
+			// and don't automatically inject a value
+			continue
 		}
+
 		args[k] = v
 	}
 
-	for name, src := range spec.Sources {
-		if err := src.validate(); err != nil {
-			return nil, fmt.Errorf("error validating source ref %q: %w", name, err)
-		}
-
-		fillDefaults(&src)
-
+	for name, src := range s.Sources {
 		if err := src.substituteBuildArgs(args); err != nil {
-			return nil, fmt.Errorf("error performing shell expansion on source %q: %w", name, err)
+			return fmt.Errorf("error performing shell expansion on source %q: %w", name, err)
 		}
 		if src.DockerImage != nil {
 			if err := src.DockerImage.Cmd.processBuildArgs(lex, args, name); err != nil {
-				return nil, fmt.Errorf("error performing shell expansion on source %q: %w", name, err)
+				return fmt.Errorf("error performing shell expansion on source %q: %w", name, err)
 			}
 		}
-		spec.Sources[name] = src
+		s.Sources[name] = src
 	}
 
-	updated, err := lex.ProcessWordWithMap(spec.Version, args)
+	updated, err := lex.ProcessWordWithMap(s.Version, args)
 	if err != nil {
-		return nil, fmt.Errorf("error performing shell expansion on version: %w", err)
+		return fmt.Errorf("error performing shell expansion on version: %w", err)
 	}
-	spec.Version = updated
+	s.Version = updated
 
-	updated, err = lex.ProcessWordWithMap(spec.Revision, args)
+	updated, err = lex.ProcessWordWithMap(s.Revision, args)
 	if err != nil {
-		return nil, fmt.Errorf("error performing shell expansion on revision: %w", err)
+		return fmt.Errorf("error performing shell expansion on revision: %w", err)
 	}
-	spec.Revision = updated
+	s.Revision = updated
 
-	for k, v := range spec.Build.Env {
+	for k, v := range s.Build.Env {
 		updated, err := lex.ProcessWordWithMap(v, args)
 		if err != nil {
-			return nil, fmt.Errorf("error performing shell expansion on env var %q: %w", k, err)
+			return fmt.Errorf("error performing shell expansion on env var %q: %w", k, err)
 		}
-		spec.Build.Env[k] = updated
-
+		s.Build.Env[k] = updated
 	}
 
-	for i, step := range spec.Build.Steps {
-		s := &step
-		if err := s.processBuildArgs(lex, args, i); err != nil {
-			return nil, fmt.Errorf("error performing shell expansion on build step %d: %w", i, err)
+	for i, step := range s.Build.Steps {
+		bs := &step
+		if err := bs.processBuildArgs(lex, args, i); err != nil {
+			return fmt.Errorf("error performing shell expansion on build step %d: %w", i, err)
 		}
-		spec.Build.Steps[i] = *s
+		s.Build.Steps[i] = *bs
 	}
 
-	for _, t := range spec.Tests {
+	for _, t := range s.Tests {
 		if err := t.processBuildArgs(lex, args, t.Name); err != nil {
-			return nil, err
+			return err
 		}
 	}
 
-	for name, target := range spec.Targets {
+	for name, target := range s.Targets {
 		for _, t := range target.Tests {
 			if err := t.processBuildArgs(lex, args, path.Join(name, t.Name)); err != nil {
-				return nil, err
+				return err
 			}
 		}
 	}
 
-	for k, patches := range spec.Patches {
-		for i, ps := range patches {
-			if ps.Strip != nil {
-				continue
-			}
-			strip := DefaultPatchStrip
-			spec.Patches[k][i].Strip = &strip
-		}
+	return nil
+}
+
+// LoadSpec loads a spec from the given data.
+func LoadSpec(dt []byte) (*Spec, error) {
+	var spec Spec
+	if err := yaml.Unmarshal(dt, &spec); err != nil {
+		return nil, fmt.Errorf("error unmarshalling spec: %w", err)
 	}
 
-	return &spec, spec.Validate()
+	if err := spec.Validate(); err != nil {
+		return nil, err
+	}
+	spec.FillDefaults()
+
+	return &spec, nil
 }
 
 func (s *BuildStep) processBuildArgs(lex *shell.Lex, args map[string]string, i int) error {
@@ -335,8 +346,29 @@ func (c *Command) processBuildArgs(lex *shell.Lex, args map[string]string, name 
 	return nil
 }
 
+func (s *Spec) FillDefaults() {
+	for name, src := range s.Sources {
+		fillDefaults(&src)
+		s.Sources[name] = src
+	}
+
+	for k, patches := range s.Patches {
+		for i, ps := range patches {
+			if ps.Strip != nil {
+				continue
+			}
+			strip := DefaultPatchStrip
+			s.Patches[k][i].Strip = &strip
+		}
+	}
+}
+
 func (s Spec) Validate() error {
 	for name, src := range s.Sources {
+		if err := src.validate(); err != nil {
+			return fmt.Errorf("error validating source ref %q: %w", name, err)
+		}
+
 		if src.DockerImage != nil && src.DockerImage.Cmd != nil {
 			for p, cfg := range src.DockerImage.Cmd.CacheDirs {
 				if _, err := sharingMode(cfg.Mode); err != nil {
