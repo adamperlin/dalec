@@ -840,3 +840,24 @@ func Test_validatePatch(t *testing.T) {
 		})
 	}
 }
+func TestArtifactBuildArgSubstitution(t *testing.T) {
+	dt := []byte(`
+artifacts:
+	binaries:
+		bin/${ARCH}/foo:
+	
+	
+`)
+
+	spec, err := LoadSpec(dt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = spec.SubstituteArgs(map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// check stuff
+}

@@ -350,6 +350,9 @@ func (s *Spec) SubstituteArgs(env map[string]string) error {
 		}
 	}
 
+	if s.Artifacts.processBuildArgs(lex, args); err != nil {
+	}
+
 	return goerrors.Join(errs...)
 }
 
@@ -704,6 +707,165 @@ func (cfg *PackageConfig) processBuildArgs(lex *shell.Lex, args map[string]strin
 			return fmt.Errorf("could not process build args for signer config: %w", err)
 		}
 	}
+
+	return nil
+}
+
+func processArtifactBuildArgs(lex *shell.Lex, args map[string]string, artifacts map[string]ArtifactConfig, atype string) (map[string]ArtifactConfig, error) {
+	processed := make(map[string]ArtifactConfig, len(artifacts))
+	for name, artifact := range artifacts {
+		err := artifact.processBuildArgs(lex, args)
+		if err != nil {
+			return nil, fmt.Errorf("error processing build args for %s %q: %w", atype, name, err)
+		}
+
+		name, err = expandArgs(lex, name, args)
+		if err != nil {
+			return nil, fmt.Errorf("error performing shell expansion on binary name %s %q: %w", atype, name, err)
+		}
+
+		processed[name] = artifact
+	}
+
+	return processed, nil
+}
+
+func (a *Artifacts) processBuildArgs(lex *shell.Lex, args map[string]string) error {
+	if binaries, err := processArtifactBuildArgs(lex, args, a.Binaries, "binary"); err != nil {
+		return err
+	} else {
+		a.Binaries = binaries
+	}
+
+	if libexec, err := processArtifactBuildArgs(lex, args, a.Libexec, "libexec"); err != nil {
+		return err
+	} else {
+		a.Libexec = libexec
+	}
+
+	if manpages, err := processArtifactBuildArgs(lex, args, a.Manpages, "manpage"); err != nil {
+		return err
+	} else {
+		a.Manpages = manpages
+	}
+
+	if dataDirs, err := processArtifactBuildArgs(lex, args, a.DataDirs, "datadir"); err != nil {
+		return err
+	} else {
+		a.DataDirs = dataDirs
+	}
+
+	if a.Directories != nil {
+		if err := a.Directories.processBuildArgs(lex, args); err != nil {
+			return errors.Wrap(err, "error processing build args for directories")
+		}
+	}
+
+	if configFiles, err := processArtifactBuildArgs(lex, args, a.ConfigFiles, "config file"); err != nil {
+		return err
+	} else {
+		a.ConfigFiles = configFiles
+	}
+
+	if docs, err := processArtifactBuildArgs(lex, args, a.Docs, "doc"); err != nil {
+		return err
+	} else {
+		a.Docs = docs
+	}
+
+	if licenses, err := processArtifactBuildArgs(lex, args, a.Licenses, "license"); err != nil {
+		return err
+	} else {
+		a.Licenses = licenses
+	}
+
+	if a.Systemd != nil {
+		if err := a.Systemd.ProcessBuildArgs(lex, args); err != nil {
+			return errors.Wrap(err, "error processing build args for systemd")
+		}
+	}
+
+	if libs, err := processArtifactBuildArgs(lex, args, a.Libs, "library"); err != nil {
+		return err
+	} else {
+		a.Libs = libs
+	}
+
+	for i := range len(a.Links) {
+		src, err := expandArgs(lex, a.Links[i].Source, args)
+		if err != nil {
+			return fmt.Errorf("error performing shell expansion on link source %q: %w", a.Links[i].Source, err)
+		}
+		a.Links[i].Source = src
+
+		dest, err := expandArgs(lex, a.Links[i].Dest, args)
+		if err != nil {
+			return fmt.Errorf("error performing shell expansion on link dest %q: %w", a.Links[i].Dest, err)
+		}
+
+		a.Links[i].Dest = dest
+	}
+
+	// headers
+	if headers, err := processArtifactBuildArgs(lex, args, a.Headers, "header"); err != nil {
+		return err
+	} else {
+		a.Headers = headers
+	}
+
+	return nil
+}
+
+func (cfg *ArtifactConfig) processBuildArgs(lex *shell.Lex, args map[string]string) error {
+	var expandedSubpath = cfg.SubPath
+	var expandedName = cfg.Name
+	var err error
+
+	expandedSubpath, err = expandArgs(lex, expandedSubpath, args)
+	if err != nil {
+		return err
+	}
+
+	expandedName, err = expandArgs(lex, expandedName, args)
+	if err != nil {
+		return err
+	}
+
+	cfg.SubPath = expandedSubpath
+	cfg.Name = expandedName
+
+	return nil
+}
+
+// type CreateArtifactDirectories struct {
+// 	// Config is a list of directories the RPM should place under the system config directory (i.e. /etc)
+// 	Config map[string]ArtifactDirConfig `yaml:"config,omitempty" json:"config,omitempty"`
+// 	// State is a list of directories the RPM should place under the common directory for shared state and libs (i.e. /var/lib).
+// 	State map[string]ArtifactDirConfig `yaml:"state,omitempty" json:"state,omitempty"`
+// }
+
+func (cfa *CreateArtifactDirectories) processBuildArgs(lex *shell.Lex, args map[string]string) error {
+	processedConfig := make(map[string]ArtifactDirConfig, len(cfa.Config))
+	processedState := make(map[string]ArtifactDirConfig, len(cfa.State))
+
+	for name := range cfa.Config {
+		name, err := expandArgs(lex, name, args)
+		if err != nil {
+			return fmt.Errorf("error performing shell expansion on config dir name %q: %w", name, err)
+		}
+
+		processedConfig[name] = cfa.Config[name]
+	}
+
+	for name := range cfa.State {
+		name, err := expandArgs(lex, name, args)
+		if err != nil {
+			return fmt.Errorf("error performing shell expansion on state dir name %q: %w", name, err)
+		}
+	}
+
+	cfa.Config = processedConfig
+	cfa.State = processedState
 
 	return nil
 }
