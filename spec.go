@@ -3,6 +3,7 @@ package dalec
 
 import (
 	"io/fs"
+	"slices"
 	"strings"
 	"time"
 
@@ -100,6 +101,82 @@ type Spec struct {
 	Tests []*TestSpec `yaml:"tests,omitempty" json:"tests,omitempty"`
 
 	extensions extensionFields `yaml:"-" json:"-"`
+}
+
+// A resolved spec is a spec specialized to a particular target. Many fields in a dalec spec,
+// such as artifacts, dependencies, and image config, can be overriden on a per-target basis.
+// This struct is used to represent the spec after it has been resolved to a particular target.
+type ResolvedSpec struct {
+	// The target that this spec is resolved to
+	TargetName string `yaml:"target,omitempty" json:"target,omitempty"`
+	// The original spec
+	Spec   *Spec   `yaml:"spec,omitempty" json:"spec,omitempty"`
+	Target *Target `yaml:"target_spec,omitempty" json:"target_spec,omitempty"`
+}
+
+func (r *ResolvedSpec) GetPackageDeps() *PackageDependencies {
+	if r.Target != nil {
+		return MergeDependencies(r.Spec.Dependencies, r.Target.Dependencies)
+	}
+
+	return r.Spec.Dependencies
+}
+
+func (r *ResolvedSpec) GetRuntimeDeps() []string {
+	deps := r.GetPackageDeps()
+	if deps == nil {
+		return nil
+	}
+
+	return SortMapKeys(deps.Runtime)
+}
+
+func (r *ResolvedSpec) GetBuildDeps() map[string]PackageConstraints {
+	deps := r.GetPackageDeps()
+	if deps == nil {
+		return nil
+	}
+
+	return deps.Build
+}
+
+func (r *ResolvedSpec) GetTestDeps() []string {
+	deps := r.GetPackageDeps()
+	if deps == nil {
+		return nil
+	}
+
+	out := slices.Clone(deps.Test)
+	slices.Sort(out)
+	return out
+}
+
+func (r *ResolvedSpec) GetImagePost() *PostInstall {
+	if r.Target != nil {
+		img := r.Target.Image
+		if img != nil && img.Post != nil {
+			return img.Post
+		}
+
+		return nil
+	}
+
+	if r.Spec.Image != nil {
+		return r.Spec.Image.Post
+	}
+
+	return nil
+}
+
+func (r *ResolvedSpec) GetArtifacts() Artifacts {
+	if r.Target != nil {
+		// If unset then we should use the global artifacts but if set or deliberately empty then we should use that.
+		if r.Target.Artifacts != nil {
+			return *r.Target.Artifacts
+		}
+	}
+
+	return r.Spec.Artifacts
 }
 
 type extensionFields map[string]rawYAML
